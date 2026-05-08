@@ -2643,109 +2643,35 @@ server.registerTool(
     inputSchema: z.object({}),
   },
   async () => {
-    // __pkg_dir is build/ for tsc, plugin root for bundle — resolve to plugin root
-    const pluginRoot = existsSync(resolve(__pkg_dir, "package.json")) ? __pkg_dir : dirname(__pkg_dir);
-    const bundlePath = resolve(pluginRoot, "cli.bundle.mjs");
-    const fallbackPath = resolve(pluginRoot, "build", "cli.js");
-
-    // Clean up insight-cache on upgrade so next ctx_insight does fresh build
-    try {
-      const sessDir = getSessionDir();
-      const insightCacheDir = join(dirname(sessDir), "insight-cache");
-      if (existsSync(insightCacheDir)) {
-        // Kill any running insight server first
-        try {
-          if (process.platform === "win32") {
-            execSync('for /f "tokens=5" %a in (\'netstat -ano ^| findstr :4747\') do taskkill /F /PID %a', { stdio: "pipe" });
-          } else {
-            execSync("lsof -ti:4747 | xargs kill 2>/dev/null", { stdio: "pipe" });
-          }
-        } catch { /* no process to kill */ }
-        rmSync(insightCacheDir, { recursive: true, force: true });
-      }
-    } catch { /* best effort — don't block upgrade */ }
-
-    let cmd: string;
-
-    if (existsSync(bundlePath)) {
-      cmd = `${buildNodeCommand(bundlePath)} upgrade`;
-    } else if (existsSync(fallbackPath)) {
-      cmd = `${buildNodeCommand(fallbackPath)} upgrade`;
-    } else {
-      // Inline fallback: neither CLI file exists (e.g. marketplace installs).
-      // Generate a self-contained node -e script that performs the upgrade.
-      const repoUrl = "https://github.com/mksglu/context-mode.git";
-      const copyDirs = ["build", "hooks", "skills", "scripts", ".claude-plugin"];
-      const copyFiles = ["start.mjs", "server.bundle.mjs", "cli.bundle.mjs", "package.json"];
-
-      // Write inline script to a temp .mjs file — avoids quote-escaping issues
-      // across cmd.exe, PowerShell, and bash (node -e '...' breaks on Windows).
-      const scriptLines = [
-        `import{execFileSync}from"node:child_process";`,
-        `import{cpSync,rmSync,existsSync,mkdtempSync}from"node:fs";`,
-        `import{join}from"node:path";`,
-        `import{tmpdir}from"node:os";`,
-        `const P=${JSON.stringify(pluginRoot)};`,
-        `const T=mkdtempSync(join(tmpdir(),"ctx-upgrade-"));`,
-        `try{`,
-        `console.log("- [x] Starting inline upgrade (no CLI found)");`,
-        `execFileSync("git",["clone","--depth","1","${repoUrl}",T],{stdio:"inherit"});`,
-        `console.log("- [x] Cloned latest source");`,
-        `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
-        `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["run","build"],{cwd:T,stdio:"inherit",shell:process.platform==="win32"});`,
-        `console.log("- [x] Built from source");`,
-        ...copyDirs.map(
-          (d) =>
-            `if(existsSync(join(T,${JSON.stringify(d)})))cpSync(join(T,${JSON.stringify(d)}),join(P,${JSON.stringify(d)}),{recursive:true,force:true});`,
-        ),
-        ...copyFiles.map(
-          (f) =>
-            `if(existsSync(join(T,${JSON.stringify(f)})))cpSync(join(T,${JSON.stringify(f)}),join(P,${JSON.stringify(f)}),{force:true});`,
-        ),
-        `console.log("- [x] Copied build artifacts");`,
-        `execFileSync(process.platform==="win32"?"npm.cmd":"npm",["install","--production"],{cwd:P,stdio:"inherit",shell:process.platform==="win32"});`,
-        `console.log("- [x] Installed production dependencies");`,
-        `console.log("## context-mode upgrade complete");`,
-        `}catch(e){`,
-        `console.error("- [ ] Upgrade failed:",e.message);`,
-        `process.exit(1);`,
-        `}finally{`,
-        `try{rmSync(T,{recursive:true,force:true})}catch{}`,
-        `}`,
-      ].join("\n");
-
-      // Server writes the temp script file — avoids shell quoting issues entirely
-      const tmpScript = resolve(pluginRoot, ".ctx-upgrade-inline.mjs");
-      const { writeFileSync: writeTmp } = await import("node:fs");
-      writeTmp(tmpScript, scriptLines);
-      cmd = buildNodeCommand(tmpScript);
-    }
-
+    // v6x fork policy: upstream upgrade clones github.com/mksglu/context-mode
+    // (both the CLI dispatch path and this tool's inline fallback). Both are
+    // disabled here. See .voyagerx/2026-05-08-security-audit.md §7.
     const text = [
-      "## ctx-upgrade",
+      "## ctx-upgrade — DISABLED in v6x fork",
       "",
-      "Run this command using your shell execution tool:",
+      "Automatic upgrade is disabled. The upstream upgrade clones",
+      "`github.com/mksglu/context-mode` and overwrites locally-built bundles,",
+      "bypassing the v6x security audit.",
       "",
+      "**Manual update flow** (operator runs on a controlled machine):",
+      "",
+      "```bash",
+      "cd <fork checkout>",
+      "git fetch upstream && git log <last-tag>..upstream/main --stat  # review",
+      "git merge upstream/main                                         # after audit",
+      "bun install --frozen-lockfile && npm run build",
+      "git tag vX.Y.Z-v6x.N && git push origin vX.Y.Z-v6x.N",
+      "gh release create vX.Y.Z-v6x.N -F notes.md ./*.tar.gz",
       "```",
-      cmd,
-      "```",
       "",
-      "After the command completes, display results as a markdown checklist:",
-      "- `[x]` for success, `[ ]` for failure",
-      "- Example format:",
-      "  ```",
-      "  ## context-mode upgrade",
-      "  - [x] Pulled latest from GitHub",
-      "  - [x] Built and installed v0.9.24",
-      "  - [x] npm global updated",
-      "  - [x] Hooks configured",
-      "  - [x] Doctor: all checks PASS",
-      "  ```",
-      "- Tell the user to restart their session to pick up the new version.",
+      "Tell the user the upgrade was aborted and direct them to the v6x fork's",
+      "release page for the next audited version. Do NOT attempt to fall back",
+      "to a manual `git clone` of the upstream repo.",
     ].join("\n");
 
     return trackResponse("ctx_upgrade", {
       content: [{ type: "text" as const, text }],
+      isError: true,
     });
   },
 );
